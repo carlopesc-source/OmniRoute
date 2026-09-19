@@ -557,3 +557,68 @@ function fmtAny(v) {
   if (typeof v === "number") return String(round(v));
   return String(v);
 }
+
+/**
+ * Minimal Markdown → HTML for the report (headings, tables, lists, paragraphs, _em_).
+ * User rule: every report is always written as BOTH .md and .html.
+ */
+export function renderHtml(md, { title = "Whale Watch" } = {}) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) =>
+    esc(s)
+      .replace(/_([^_]+)_/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const lines = md.split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^#{1,3} /.test(l)) {
+      const n = l.match(/^#+/)[0].length;
+      out.push(`<h${n}>${inline(l.slice(n + 1))}</h${n}>`);
+      i++;
+    } else if (l.startsWith("|")) {
+      const rows = [];
+      while (i < lines.length && lines[i].startsWith("|")) rows.push(lines[i++]);
+      const cells = (r) =>
+        r
+          .slice(1, -1)
+          .split("|")
+          .map((c) => c.trim());
+      const head = cells(rows[0]);
+      const body = rows.slice(2).map(cells);
+      out.push(
+        "<table><thead><tr>" +
+          head.map((c) => `<th>${inline(c)}</th>`).join("") +
+          "</tr></thead><tbody>"
+      );
+      for (const r of body) {
+        const level = r[1] || "";
+        const cls = /PELIGRO|DANGER/.test(level)
+          ? ' class="danger"'
+          : /ATENCION|WARN/.test(level)
+            ? ' class="warn"'
+            : "";
+        out.push(`<tr${cls}>` + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>");
+      }
+      out.push("</tbody></table>");
+    } else if (l.startsWith("- ")) {
+      out.push("<ul>");
+      while (i < lines.length && lines[i].startsWith("- "))
+        out.push(`<li>${inline(lines[i++].slice(2))}</li>`);
+      out.push("</ul>");
+    } else if (l.trim() === "") {
+      i++;
+    } else {
+      out.push(`<p>${inline(l)}</p>`);
+      i++;
+    }
+  }
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
+<style>body{font:14px/1.45 system-ui,sans-serif;margin:16px;max-width:1200px;color:#111;background:#fff}@media(prefers-color-scheme:dark){body{color:#eee;background:#121212}th{background:#222}code{background:#222}}
+table{border-collapse:collapse;margin:8px 0;width:100%;font-size:13px}th,td{border:1px solid #8884;padding:4px 6px;text-align:left;word-break:break-all}th{background:#eee}
+tr.danger td{background:#c0392b33}tr.warn td{background:#f39c1233}h1{font-size:20px}h2{font-size:16px;margin-top:24px}code{background:#eee;padding:0 3px}</style></head><body>
+${out.join("\n")}
+</body></html>
+`;
+}

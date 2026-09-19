@@ -58,7 +58,7 @@ Variables de entorno opcionales:
 | `WHALE_WATCH_DIR`                         | Dónde guardar estado e informes (por defecto `_artifacts/whale-watch/`, ignorado por git). |
 
 Estado: `_artifacts/whale-watch/state/<SYMBOL>/<ts>.json` (últimos 500 por token) + `latest.json`;
-informes en `_artifacts/whale-watch/reports/`; cooldown de alertas en `alerts.json`.
+informes en `_artifacts/whale-watch/reports/` **siempre en `.md` y `.html`** (regla del operador); cooldown de alertas en `alerts.json`.
 
 ## Señales (todas con valor observado + umbral en el informe)
 

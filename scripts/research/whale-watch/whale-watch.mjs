@@ -27,6 +27,7 @@ import {
   fmtUsd,
   normalizeMarket,
   pickBestPair,
+  renderHtml,
   renderReport,
   resolveThresholds,
 } from "./lib.mjs";
@@ -303,9 +304,13 @@ async function cmdSnapshot(cfg, { quiet = false } = {}) {
   const reportsDir = path.join(stateDir, "reports");
   ensureDir(reportsDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  // Always write BOTH formats (operator rule): Markdown + HTML.
+  const html = renderHtml(md, { title: `Whale Watch ${stamp}` });
   fs.writeFileSync(path.join(reportsDir, `${stamp}.md`), md);
+  fs.writeFileSync(path.join(reportsDir, `${stamp}.html`), html);
   fs.writeFileSync(path.join(reportsDir, "latest.md"), md);
-  log(`report: ${path.join(reportsDir, "latest.md")}`);
+  fs.writeFileSync(path.join(reportsDir, "latest.html"), html);
+  log(`report: ${path.join(reportsDir, "latest.md")} + latest.html`);
   await dispatchAlerts(cfg, results);
   return results;
 }
@@ -379,6 +384,12 @@ function cmdReport(cfg) {
   }
   if (!results.length) return log("no snapshots yet — run `snapshot` first");
   const md = renderReport(results, { title: "Whale Watch — último snapshot" });
+  const reportsDir = path.join(stateDir, "reports");
+  ensureDir(reportsDir);
+  fs.writeFileSync(
+    path.join(reportsDir, "latest.html"),
+    renderHtml(md, { title: "Whale Watch — último snapshot" })
+  );
   console.log(md);
 }
 

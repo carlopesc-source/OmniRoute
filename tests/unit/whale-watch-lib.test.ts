@@ -13,6 +13,7 @@ import {
   evaluateSignals,
   normalizeMarket,
   pickBestPair,
+  renderHtml,
   renderReport,
   resolveThresholds,
 } from "../../scripts/research/whale-watch/lib.mjs";
@@ -407,4 +408,16 @@ test("dexPairsForMints falls back to the per-token endpoint when the batch endpo
   assert.match(urls[1], /\/latest\/dex\/tokens\//);
   const batch = await dexPairsForMints([MINT], (async () => [pair(), pair()]) as never);
   assert.equal(batch.length, 2);
+});
+
+test("renderHtml converts headings, tables, lists and flags danger rows", () => {
+  const md =
+    "# T\n\n| Token | Nivel |\n|---|---|\n| A | PELIGRO |\n| B | OK |\n\n## S\n- x <y>\n_nota_\n";
+  const html = renderHtml(md, { title: "R <1>" });
+  assert.match(html, /<title>R &lt;1&gt;<\/title>/);
+  assert.match(html, /<h1>T<\/h1>/);
+  assert.match(html, /<tr class="danger"><td>A<\/td><td>PELIGRO<\/td><\/tr>/);
+  assert.match(html, /<tr><td>B<\/td><td>OK<\/td><\/tr>/);
+  assert.match(html, /<li>x &lt;y&gt;<\/li>/);
+  assert.match(html, /<p><em>nota<\/em><\/p>/);
 });
