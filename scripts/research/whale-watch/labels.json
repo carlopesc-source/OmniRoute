@@ -1,0 +1,11 @@
+{
+  "_comment": "Manual address labels (Arkham-style). type: pool | lp | burn | exchange | insider | user | known. Add the wallets you identify yourself.",
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1": {
+    "name": "Raydium AMM v4 authority (pool vault owner)",
+    "type": "pool"
+  },
+  "1nc1nerator11111111111111111111111111111111": {
+    "name": "Solana incinerator (burn)",
+    "type": "burn"
+  }
+}
