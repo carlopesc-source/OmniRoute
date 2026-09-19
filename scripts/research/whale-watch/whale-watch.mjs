@@ -22,6 +22,7 @@ import {
   aggregateHolders,
   candidatesBySymbol,
   dedupeAlerts,
+  detectChain,
   diffHolders,
   evaluateSignals,
   fmtUsd,
@@ -162,6 +163,41 @@ async function cmdResolve(cfg) {
 async function analyzeToken(cfg, t, labels, market) {
   const dir = path.join(stateDir, "state", t.symbol);
   const prev = readJson(path.join(dir, "latest.json"), null);
+  const chain = t.chain || detectChain(t.mint);
+
+  // Holder analysis is Solana-only: it uses the Solana JSON-RPC and RugCheck.
+  // For an EVM token (0x…) only DexScreener market signals are available here.
+  if (chain !== "solana") {
+    const evaluation = evaluateSignals(
+      {
+        holders: [],
+        market,
+        prevMarket: prev?.market || null,
+        rug: {},
+        moves: [],
+        positionTokens: t.positionTokens ?? null,
+        positionUsd: t.positionUsd ?? null,
+      },
+      cfg.thresholds
+    );
+    const snap = {
+      ts: Date.now(),
+      symbol: t.symbol,
+      mint: t.mint,
+      chain: market?.chainId || chain,
+      mintVerified: t.mintVerified !== false,
+      holderSource:
+        "NO DISPONIBLE — token EVM: este script solo analiza holders en Solana (mercado sí)",
+      holders: [],
+      moves: [],
+      market,
+      evaluation,
+    };
+    ensureDir(dir);
+    writeJson(path.join(dir, `${snap.ts}.json`), snap);
+    writeJson(path.join(dir, "latest.json"), snap);
+    return snap;
+  }
   const rpcUrl = cfg.rpcUrl;
   const heliusKey = process.env.HELIUS_API_KEY;
 
@@ -278,7 +314,9 @@ async function cmdSnapshot(cfg, { quiet = false } = {}) {
   }
   const results = [];
   for (const t of withMint) {
-    const market = normalizeMarket(pickBestPair(pairs, { mint: t.mint }));
+    const market = normalizeMarket(
+      pickBestPair(pairs, { mint: t.mint, chain: t.chain || detectChain(t.mint) })
+    );
     try {
       const snap = await analyzeToken(cfg, t, labels, market);
       results.push(snap);

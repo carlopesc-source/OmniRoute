@@ -27,7 +27,27 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   positionToLiqWarnPct: 10,
 });
 
-export const LEVELS = Object.freeze({ OK: "OK", WARN: "ATENCION", DANGER: "PELIGRO" });
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const EVM = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Chain family inferred from the address FORMAT alone.
+ * "solana" = base58 32-44 chars; "evm" = 0x + 40 hex (Ethereum, Base, BSC, Arbitrum…
+ * the format does NOT say which of them, only DexScreener does); "unknown" otherwise.
+ */
+export function detectChain(address) {
+  if (typeof address !== "string") return "unknown";
+  if (EVM.test(address)) return "evm";
+  if (BASE58.test(address)) return "solana";
+  return "unknown";
+}
+
+export const LEVELS = Object.freeze({
+  OK: "OK",
+  WARN: "ATENCION",
+  DANGER: "PELIGRO",
+  NODATA: "SIN DATOS",
+});
 
 /** Merge user thresholds over defaults, ignoring unknown/invalid keys. */
 export function resolveThresholds(user = {}) {
@@ -42,11 +62,14 @@ export function resolveThresholds(user = {}) {
  * Pick the most liquid Solana pair for a token from a DexScreener `pairs` array.
  * When `mint` is given only pairs whose baseToken.address matches are considered.
  */
-export function pickBestPair(pairs, { mint = null, symbol = null } = {}) {
+export function pickBestPair(pairs, { mint = null, symbol = null, chain = "solana" } = {}) {
   if (!Array.isArray(pairs)) return null;
   const candidates = pairs.filter((p) => {
-    if (!p || p.chainId !== "solana") return false;
-    if (mint) return p.baseToken?.address === mint;
+    if (!p) return false;
+    // EVM addresses live on many chains; the most liquid pair decides which one.
+    if (chain === "solana" && p.chainId !== "solana") return false;
+    if (chain === "evm" && p.chainId === "solana") return false;
+    if (mint) return (p.baseToken?.address || "").toLowerCase() === mint.toLowerCase();
     if (symbol) return (p.baseToken?.symbol || "").toUpperCase() === symbol.toUpperCase();
     return true;
   });
@@ -408,11 +431,15 @@ export function evaluateSignals(input, thresholds = DEFAULT_THRESHOLDS) {
   }
 
   const score = s.reduce((a, x) => a + W[x.severity], 0);
+  // No market data AND no holders observed is NOT a clean bill of health.
+  const noData = !mk && conc.holdersConsidered === 0;
   const level = s.some((x) => x.severity === "DANGER")
     ? LEVELS.DANGER
     : s.length
       ? LEVELS.WARN
-      : LEVELS.OK;
+      : noData
+        ? LEVELS.NODATA
+        : LEVELS.OK;
   return { level, score, signals: s, concentration: conc };
 }
 

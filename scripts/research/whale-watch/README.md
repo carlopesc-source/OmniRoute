@@ -110,10 +110,33 @@ de reglas, ordenadas por gravedad; ajústalas a tu criterio:
 Lo que el script **no** puede afirmar: la intención de una wallet, si dos wallets son la misma
 persona (salvo lo que RugCheck marque como insider) ni si una bajada va a continuar.
 
+## Cadenas: qué se analiza en cada una
+
+El análisis de **ballenas/holders** usa el RPC de Solana y RugCheck, así que **solo funciona en
+Solana**. Un token EVM (dirección `0x…` + 40 hex: Ethereum, Base, BSC, Arbitrum…) obtiene únicamente
+las señales de mercado de DexScreener; su campo `holderSource` lo dice explícitamente y su nivel
+nunca se basa en concentración de holders.
+
+El formato de la dirección distingue la familia de cadena (`detectChain`), pero **no** dice en cuál
+de las cadenas EVM vive el token: eso lo decide el par más líquido que devuelve DexScreener.
+
+Un token sin ningún dato observado se marca **`SIN DATOS`**, nunca `OK`. `OK` significa
+"se obtuvieron datos y ninguna regla saltó".
+
 ## Tokens del portfolio (captura 2026-09-19)
 
-`tokens.json` trae los 11 tokens de la captura de posiciones con su cantidad (`positionTokens`).
-Los mints están a `null` a propósito: un símbolo como `DOT`, `RICE` o `DREAM` lo comparten muchos
+`tokens.json` trae los 11 tokens de la captura de posiciones con su cantidad (`positionTokens`),
+más SPAWN. Cuatro direcciones las facilitó el operador el 2026-09-19 y **no han podido verificarse
+contra la red en esa sesión** (política de salida bloqueada):
+
+| Token   | Dirección                                      | Cadena | Análisis de ballenas |
+| ------- | ---------------------------------------------- | ------ | -------------------- |
+| ROUTER  | `6SjVTj1VGwFSXn7wEjwFm77LvACeTqB7sQUebYKX8Ds5` | Solana | sí                   |
+| SPAWN   | `pC9Wo6oHLJx2Vwrvrtpj64mRHQPFYwvGSr4eR2apump`  | Solana | sí                   |
+| DOT     | `0x23a2847d772803f9efc64b4277b782b06296fe51`   | EVM    | no, solo mercado     |
+| SURPLUS | `0xc52aedec3374422d7510e294cfaa90799595cba3`   | EVM    | no, solo mercado     |
+
+Los otros siete mints siguen a `null` a propósito: un símbolo como `DOT`, `RICE` o `DREAM` lo comparten muchos
 tokens y no hay forma de saber cuál es el tuyo sin el mint de tu wallet. El comando `resolve` lista
 los candidatos; el que aparece en tu wallet es el que hay que marcar `mintVerified: true`.
 

@@ -9,6 +9,7 @@ import {
   candidatesBySymbol,
   concentration,
   dedupeAlerts,
+  detectChain,
   diffHolders,
   evaluateSignals,
   normalizeMarket,
@@ -224,8 +225,8 @@ test("evaluateSignals fires each rule with value + threshold and picks the level
   assert.ok(r.score >= 12);
 });
 
-test("evaluateSignals returns OK with no data and ATENCION on warn-only", () => {
-  assert.equal(evaluateSignals({}).level, "OK");
+test("evaluateSignals returns SIN DATOS with no data and ATENCION on warn-only", () => {
+  assert.equal(evaluateSignals({}).level, "SIN DATOS");
   const r = evaluateSignals({
     market: normalizeMarket(
       pair({ priceChange: { h1: -21 }, txns: {}, liquidity: { usd: 1e6 }, marketCap: 1e6 })
@@ -420,4 +421,54 @@ test("renderHtml converts headings, tables, lists and flags danger rows", () => 
   assert.match(html, /<tr><td>B<\/td><td>OK<\/td><\/tr>/);
   assert.match(html, /<li>x &lt;y&gt;<\/li>/);
   assert.match(html, /<p><em>nota<\/em><\/p>/);
+});
+
+test("detectChain separates Solana base58 mints from EVM 0x addresses", () => {
+  assert.equal(detectChain("6SjVTj1VGwFSXn7wEjwFm77LvACeTqB7sQUebYKX8Ds5"), "solana");
+  assert.equal(detectChain("pC9Wo6oHLJx2Vwrvrtpj64mRHQPFYwvGSr4eR2apump"), "solana");
+  assert.equal(detectChain("0x23a2847d772803f9efc64b4277b782b06296fe51"), "evm");
+  assert.equal(detectChain("0xC52AEDEC3374422D7510E294CFAA90799595CBA3"), "evm");
+  assert.equal(detectChain("0x1234"), "unknown"); // too short for EVM
+  assert.equal(detectChain("0OIl+/=="), "unknown"); // base58 excludes 0 O I l
+  assert.equal(detectChain(null as never), "unknown");
+});
+
+test("pickBestPair on an EVM token ignores Solana pairs and matches case-insensitively", () => {
+  const evm = "0x23a2847d772803f9efc64b4277b782b06296fe51";
+  const pairs = [
+    { chainId: "solana", baseToken: { address: evm }, liquidity: { usd: 1e9 } },
+    {
+      chainId: "base",
+      pairAddress: "base-pair",
+      baseToken: { address: evm.toUpperCase() },
+      liquidity: { usd: 5000 },
+    },
+    {
+      chainId: "ethereum",
+      pairAddress: "eth-pair",
+      baseToken: { address: evm },
+      liquidity: { usd: 90000 },
+    },
+  ];
+  assert.equal(pickBestPair(pairs, { mint: evm, chain: "evm" })?.pairAddress, "eth-pair");
+  assert.equal(pickBestPair(pairs, { mint: evm, chain: "solana" })?.chainId, "solana");
+});
+
+test("evaluateSignals reports SIN DATOS instead of OK when nothing was observed", () => {
+  assert.equal(evaluateSignals({}).level, "SIN DATOS");
+  assert.equal(
+    evaluateSignals({ holders: [], market: null, rug: {}, moves: [] }).level,
+    "SIN DATOS"
+  );
+  // Market data present and every rule quiet => genuinely OK.
+  const calm = normalizeMarket({
+    chainId: "ethereum",
+    baseToken: { address: "0x1" },
+    priceUsd: "1",
+    liquidity: { usd: 500000 },
+    marketCap: 1000000,
+    priceChange: { h1: 1, h24: 2 },
+    txns: { h1: { buys: 50, sells: 10 } },
+  });
+  assert.equal(evaluateSignals({ holders: [], market: calm, rug: {}, moves: [] }).level, "OK");
 });
