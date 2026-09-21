@@ -79,6 +79,14 @@ informes en `_artifacts/whale-watch/reports/` **siempre en `.md` y `.html`** (re
 | `SELL_PRESSURE_1H`       | WARN          | ventas/compras ≥ 1,5 en la última hora (mín. 20 transacciones)              | DexScreener                    |
 | `THIN_LIQUIDITY`         | WARN          | liquidez < 2 % del market cap                                               | DexScreener                    |
 | `POSITION_VS_LIQUIDITY`  | WARN          | tu posición ≥ 10 % de la liquidez del pool (salir de golpe mueve el precio) | DexScreener + `positionTokens` |
+| `FOMO_RISK_1H`           | WARN          | el precio ya ha subido ≥ 50 % en 1 h                                        | DexScreener                    |
+| `FOMO_RISK_24H`          | WARN          | el precio ya ha subido ≥ 200 % en 24 h                                      | DexScreener                    |
+| `RECENT_LAUNCH`          | WARN          | el par tiene menos de 7 días                                                | DexScreener                    |
+| `PUMP_FUN_ORIGIN`        | WARN          | el mint acaba en `pump` (lanzado en pump.fun)                               | formato del mint               |
+
+Las cuatro últimas son **señales de entrada**, no de venta: saltan cuando el precio ya ha subido o
+el par es muy nuevo. No dicen que vaya a bajar; dicen que quien compra en ese momento compra
+**después** del movimiento, que es exactamente lo que ocurre al operar por impulso.
 
 Nivel del token: `PELIGRO` si hay alguna señal DANGER, `ATENCION` si solo hay WARN, `OK` si no hay
 ninguna. Los umbrales viven en `tokens.json → thresholds`.
@@ -143,6 +151,24 @@ los candidatos; el que aparece en tu wallet es el que hay que marcar `mintVerifi
 Los tokens de la lista "Robotics" de CoinGecko (VVV, COAI, AUKI, SPAWN, CASHCAT, VELO, ROBOT) no
 están incluidos: esa lista no indica en qué cadena vive cada uno y este script solo cubre Solana.
 Si alguno es de Solana, añádelo a `tokens.json` con su mint.
+
+## Sobre los tokens lanzados en pump.fun
+
+Un mint acabado en `pump` indica **dónde se lanzó** el token, nada más. pump.fun es un mecanismo de
+lanzamiento abierto: no exige equipo identificado, ni auditoría, ni bloqueo de los tokens del
+creador, ni que exista producto alguno. El sufijo por tanto **no distingue** un proyecto con algo
+detrás de un meme sin nada detrás.
+
+Lo que sí se puede comprobar en cadena, y el script comprueba:
+
+- si el mint conserva autoridad de emisión (`MINT_AUTHORITY`) o de congelación (`FREEZE_AUTHORITY`),
+- si la liquidez está bloqueada o quemada (`LP_UNLOCKED`),
+- qué parte del supply está en pocas manos (`TOP10_CONCENTRATION`, `SINGLE_WHALE`),
+- qué parte está en wallets que RugCheck marca como insider (`INSIDER_SHARE`).
+
+Lo que **no** se puede comprobar en cadena, ni con este script ni con ninguna herramienta de este
+tipo: si existe un equipo real, si hay producto, si los ingresos que se anuncian son ciertos. Eso
+solo se verifica fuera de la cadena y es trabajo manual.
 
 ## Tests
 
