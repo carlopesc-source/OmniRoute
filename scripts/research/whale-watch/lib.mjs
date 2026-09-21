@@ -25,6 +25,10 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   // Liquidity depth.
   liqToMcapMinPct: 2,
   positionToLiqWarnPct: 10,
+  // Entry-side guards (the inverse of a sell signal: when NOT to buy on impulse).
+  fomoPump1hPct: 50,
+  fomoPump24hPct: 200,
+  recentLaunchDays: 7,
 });
 
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -40,6 +44,17 @@ export function detectChain(address) {
   if (EVM.test(address)) return "evm";
   if (BASE58.test(address)) return "solana";
   return "unknown";
+}
+
+/**
+ * True when the mint address ends in "pump", the suffix produced by pump.fun's
+ * vanity mint generator. This identifies the LAUNCH VENUE only. It says nothing
+ * about whether a project, team or product exists behind the token.
+ */
+export function isPumpFunMint(address) {
+  return (
+    typeof address === "string" && detectChain(address) === "solana" && address.endsWith("pump")
+  );
 }
 
 export const LEVELS = Object.freeze({
@@ -428,6 +443,51 @@ export function evaluateSignals(input, thresholds = DEFAULT_THRESHOLDS) {
           `your position (${fmtUsd(posUsd)}) is this % of pool liquidity (${fmtUsd(mk.liquidityUsd)}); exiting at once would move the price`
         );
     }
+  }
+
+  // ---- entry-side guards: these fire on the way UP, not down ----
+  if (mk) {
+    const up1h = mk.priceChange?.h1;
+    const up24h = mk.priceChange?.h24;
+    if (up1h != null && up1h >= t.fomoPump1hPct) {
+      add(
+        "FOMO_RISK_1H",
+        "WARN",
+        up1h,
+        t.fomoPump1hPct,
+        "el precio ya ha subido esto en 1h: comprar ahora es comprar despues del movimiento"
+      );
+    }
+    if (up24h != null && up24h >= t.fomoPump24hPct) {
+      add(
+        "FOMO_RISK_24H",
+        "WARN",
+        up24h,
+        t.fomoPump24hPct,
+        "el precio ya ha subido esto en 24h: comprar ahora es comprar despues del movimiento"
+      );
+    }
+    if (mk.pairCreatedAt != null) {
+      const ageDays = (Date.now() - mk.pairCreatedAt) / 86400000;
+      if (ageDays < t.recentLaunchDays) {
+        add(
+          "RECENT_LAUNCH",
+          "WARN",
+          round(ageDays, 1),
+          t.recentLaunchDays,
+          "el par tiene menos dias que el umbral: sin historial suficiente para juzgar nada"
+        );
+      }
+    }
+  }
+  if (input.isPumpFun) {
+    add(
+      "PUMP_FUN_ORIGIN",
+      "WARN",
+      null,
+      null,
+      "mint acabado en 'pump': lanzado en pump.fun. Indica el lugar de lanzamiento, NO si hay proyecto detras"
+    );
   }
 
   const score = s.reduce((a, x) => a + W[x.severity], 0);

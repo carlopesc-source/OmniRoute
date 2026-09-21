@@ -12,6 +12,7 @@ import {
   detectChain,
   diffHolders,
   evaluateSignals,
+  isPumpFunMint,
   normalizeMarket,
   pickBestPair,
   renderHtml,
@@ -471,4 +472,46 @@ test("evaluateSignals reports SIN DATOS instead of OK when nothing was observed"
     txns: { h1: { buys: 50, sells: 10 } },
   });
   assert.equal(evaluateSignals({ holders: [], market: calm, rug: {}, moves: [] }).level, "OK");
+});
+
+test("isPumpFunMint detects the pump.fun vanity suffix on Solana mints only", () => {
+  assert.equal(isPumpFunMint("69LjZUUzxj3Cb3Fxeo1X4QpYEQTboApkhXTysPpbpump"), true);
+  assert.equal(isPumpFunMint("pC9Wo6oHLJx2Vwrvrtpj64mRHQPFYwvGSr4eR2apump"), true);
+  assert.equal(isPumpFunMint("6SjVTj1VGwFSXn7wEjwFm77LvACeTqB7sQUebYKX8Ds5"), false);
+  assert.equal(isPumpFunMint("0xb5761f36fdfe2892f1b54bc8ee8babb2a1b698d3"), false);
+  assert.equal(isPumpFunMint(null as never), false);
+});
+
+test("entry-side guards fire on the way up and on a fresh pair", () => {
+  const hot = normalizeMarket({
+    chainId: "solana",
+    baseToken: { address: "M" },
+    priceUsd: "1",
+    liquidity: { usd: 500000 },
+    marketCap: 1000000,
+    priceChange: { h1: 60, h24: 250 },
+    txns: { h1: { buys: 80, sells: 10 } },
+    pairCreatedAt: Date.now() - 2 * 86400000,
+  });
+  const r = evaluateSignals({ holders: [], market: hot, rug: {}, moves: [], isPumpFun: true });
+  const ids = r.signals.map((s) => s.id);
+  assert.ok(ids.includes("FOMO_RISK_1H"));
+  assert.ok(ids.includes("FOMO_RISK_24H"));
+  assert.ok(ids.includes("RECENT_LAUNCH"));
+  assert.ok(ids.includes("PUMP_FUN_ORIGIN"));
+  assert.equal(r.signals.find((s) => s.id === "RECENT_LAUNCH").value, 2);
+  assert.equal(r.level, "ATENCION");
+
+  // An old pair rising gently trips none of them.
+  const calm = normalizeMarket({
+    chainId: "solana",
+    baseToken: { address: "M" },
+    priceUsd: "1",
+    liquidity: { usd: 500000 },
+    marketCap: 1000000,
+    priceChange: { h1: 3, h24: 8 },
+    txns: { h1: { buys: 80, sells: 10 } },
+    pairCreatedAt: Date.now() - 400 * 86400000,
+  });
+  assert.deepEqual(evaluateSignals({ holders: [], market: calm, rug: {}, moves: [] }).signals, []);
 });
