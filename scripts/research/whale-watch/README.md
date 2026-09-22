@@ -170,6 +170,22 @@ Lo que **no** se puede comprobar en cadena, ni con este script ni con ninguna he
 tipo: si existe un equipo real, si hay producto, si los ingresos que se anuncian son ciertos. Eso
 solo se verifica fuera de la cadena y es trabajo manual.
 
+## Screener de capitalización (CoinGecko, sin clave)
+
+Para re-verificar en tu máquina las cifras de cualquier estudio, o buscar candidatos nuevos en una banda:
+
+```bash
+node scripts/research/whale-watch/whale-watch.mjs screen                       # ids de screen.json, banda 5–60 M$
+node scripts/research/whale-watch/whale-watch.mjs screen --min 5e6 --max 60e6 --category robotics
+node scripts/research/whale-watch/whale-watch.mjs categories --q robot          # ids de categoría de CoinGecko
+node scripts/research/whale-watch/whale-watch.mjs search pons                   # id de una moneda
+```
+
+Salida: tabla con MCap, FDV, FDV/MCap, float, volumen/MCap, 24h/7d/30d, caída desde ATH y el múltiplo
+aritmético hasta 1.000 M$ (no es una previsión). Se escribe siempre en `.md` y `.html`
+(`reports/screen-latest.*`). La API pública de CoinGecko admite unas 30 peticiones por minuto; el
+script espera 2,2 s entre llamadas. Con `COINGECKO_API_KEY` (clave demo gratuita) hay más cuota.
+
 ## Tests
 
 ```bash

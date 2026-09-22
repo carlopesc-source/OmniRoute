@@ -653,7 +653,12 @@ export function renderHtml(md, { title = "Whale Watch" } = {}) {
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const inline = (s) =>
     esc(s)
-      .replace(/_([^_]+)_/g, "<em>$1</em>")
+      .replace(
+        /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>'
+      )
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^\w])_([^_]+)_(?=[^\w]|$)/g, "$1<em>$2</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>");
   const lines = md.split("\n");
   const out = [];
@@ -694,6 +699,19 @@ export function renderHtml(md, { title = "Whale Watch" } = {}) {
       while (i < lines.length && lines[i].startsWith("- "))
         out.push(`<li>${inline(lines[i++].slice(2))}</li>`);
       out.push("</ul>");
+    } else if (/^\d+\. /.test(l)) {
+      out.push("<ol>");
+      while (i < lines.length && /^\d+\. /.test(lines[i]))
+        out.push(`<li>${inline(lines[i++].replace(/^\d+\. /, ""))}</li>`);
+      out.push("</ol>");
+    } else if (l.startsWith("> ")) {
+      out.push("<blockquote>");
+      while (i < lines.length && lines[i].startsWith("> "))
+        out.push(`<p>${inline(lines[i++].slice(2))}</p>`);
+      out.push("</blockquote>");
+    } else if (/^---+$/.test(l.trim())) {
+      out.push("<hr>");
+      i++;
     } else if (l.trim() === "") {
       i++;
     } else {
@@ -704,8 +722,79 @@ export function renderHtml(md, { title = "Whale Watch" } = {}) {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
 <style>body{font:14px/1.45 system-ui,sans-serif;margin:16px;max-width:1200px;color:#111;background:#fff}@media(prefers-color-scheme:dark){body{color:#eee;background:#121212}th{background:#222}code{background:#222}}
 table{border-collapse:collapse;margin:8px 0;width:100%;font-size:13px}th,td{border:1px solid #8884;padding:4px 6px;text-align:left;word-break:break-all}th{background:#eee}
-tr.danger td{background:#c0392b33}tr.warn td{background:#f39c1233}h1{font-size:20px}h2{font-size:16px;margin-top:24px}code{background:#eee;padding:0 3px}</style></head><body>
+tr.danger td{background:#c0392b33}tr.warn td{background:#f39c1233}h1{font-size:20px}h2{font-size:16px;margin-top:24px}code{background:#eee;padding:0 3px}blockquote{border-left:3px solid #8886;margin:8px 0;padding:4px 12px;opacity:.9}a{color:#2b6cb0}@media(prefers-color-scheme:dark){a{color:#7ab7ff}}</style></head><body>
 ${out.join("\n")}
 </body></html>
 `;
+}
+
+// ---------------- market-cap screener (CoinGecko rows → filtered, enriched, ranked) ----------------
+/**
+ * Keep rows whose market_cap is inside [minMcap, maxMcap] and enrich them with
+ * float %, FDV/mcap, 24h volume/mcap and drawdown from ATH. Pure function.
+ */
+export function screenMarkets(rows, { minMcap = 5e6, maxMcap = 60e6 } = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || seen.has(r.id)) continue;
+    seen.add(r.id);
+    const mcap = Number(r.market_cap);
+    if (!Number.isFinite(mcap) || mcap < minMcap || mcap > maxMcap) continue;
+    const circ = Number(r.circulating_supply);
+    const total = Number(r.total_supply) || Number(r.max_supply);
+    const fdv = Number(r.fully_diluted_valuation);
+    out.push({
+      id: r.id,
+      symbol: String(r.symbol || "").toUpperCase(),
+      name: r.name,
+      rank: r.market_cap_rank ?? null,
+      priceUsd: Number(r.current_price),
+      marketCapUsd: mcap,
+      fdvUsd: Number.isFinite(fdv) ? fdv : null,
+      fdvToMcap: Number.isFinite(fdv) && mcap > 0 ? round(fdv / mcap) : null,
+      floatPct: Number.isFinite(circ) && total > 0 ? round((circ / total) * 100, 1) : null,
+      volume24hUsd: Number(r.total_volume) || null,
+      volToMcapPct:
+        mcap > 0 && r.total_volume ? round((Number(r.total_volume) / mcap) * 100, 1) : null,
+      change24hPct: round(
+        r.price_change_percentage_24h_in_currency ?? r.price_change_percentage_24h,
+        1
+      ),
+      change7dPct: round(r.price_change_percentage_7d_in_currency, 1),
+      change30dPct: round(r.price_change_percentage_30d_in_currency, 1),
+      athDrawdownPct: round(r.ath_change_percentage, 1),
+      athDate: r.ath_date || null,
+      xTo1B: mcap > 0 ? round(1e9 / mcap, 1) : null,
+    });
+  }
+  out.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
+  return out;
+}
+
+/** Markdown for a screen run. */
+export function renderScreenReport(
+  rows,
+  { title = "Whale Watch — screen", minMcap, maxMcap, generatedAt = new Date(), notes = [] } = {}
+) {
+  const L = [`# ${title} — ${generatedAt.toISOString()}`, ""];
+  L.push(
+    `Banda: ${fmtUsd(minMcap)} – ${fmtUsd(maxMcap)} de capitalización (CoinGecko, precio spot al momento de la consulta). ${rows.length} resultado(s).`
+  );
+  for (const n of notes) L.push(`- ${n}`);
+  L.push("");
+  L.push(
+    "| # | Token | Nombre | MCap | FDV | FDV/MCap | Float | Vol24h/MCap | 24h | 7d | 30d | Desde ATH | x hasta $1B |"
+  );
+  L.push("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+  rows.forEach((r, i) =>
+    L.push(
+      `| ${i + 1} | ${r.symbol} | ${r.name} (\`${r.id}\`) | ${fmtUsd(r.marketCapUsd)} | ${fmtUsd(r.fdvUsd)} | ${r.fdvToMcap ?? "n/d"} | ${r.floatPct != null ? r.floatPct + "%" : "n/d"} | ${r.volToMcapPct != null ? r.volToMcapPct + "%" : "n/d"} | ${pct(r.change24hPct)} | ${pct(r.change7dPct)} | ${pct(r.change30dPct)} | ${pct(r.athDrawdownPct)} | ${r.xTo1B ?? "n/d"}x |`
+    )
+  );
+  L.push("");
+  L.push(
+    "_FDV/MCap alto y Float bajo = mucho token aún por desbloquear. x hasta $1B es aritmética (1000M / MCap), no una previsión._"
+  );
+  return L.join("\n");
 }

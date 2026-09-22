@@ -17,9 +17,14 @@ import {
   pickBestPair,
   renderHtml,
   renderReport,
+  renderScreenReport,
+  screenMarkets,
   resolveThresholds,
 } from "../../scripts/research/whale-watch/lib.mjs";
 import {
+  cgCategories,
+  cgMarkets,
+  cgSearch,
   dexPairsForMints,
   getLargestHolders,
   getMintInfo,
@@ -514,4 +519,90 @@ test("entry-side guards fire on the way up and on a fresh pair", () => {
     pairCreatedAt: Date.now() - 400 * 86400000,
   });
   assert.deepEqual(evaluateSignals({ holders: [], market: calm, rug: {}, moves: [] }).signals, []);
+});
+
+test("screenMarkets filters by market-cap band, dedupes and enriches", () => {
+  const row = (id: string, mcap: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    symbol: id,
+    name: id.toUpperCase(),
+    market_cap_rank: 100,
+    current_price: 1,
+    market_cap: mcap,
+    fully_diluted_valuation: mcap * 4,
+    circulating_supply: 250,
+    total_supply: 1000,
+    total_volume: mcap / 10,
+    price_change_percentage_24h_in_currency: 1.234,
+    price_change_percentage_7d_in_currency: -5.5,
+    price_change_percentage_30d_in_currency: 40,
+    ath_change_percentage: -74.8,
+    ath_date: "2026-04-29T00:00:00Z",
+    ...extra,
+  });
+  const rows = [
+    row("big", 1e9),
+    row("a", 20e6),
+    row("a", 20e6),
+    row("b", 55e6),
+    row("tiny", 1e6),
+    { id: "junk" },
+    null,
+  ];
+  const out = screenMarkets(rows as never, { minMcap: 5e6, maxMcap: 60e6 });
+  assert.deepEqual(
+    out.map((r) => r.id),
+    ["b", "a"]
+  );
+  const a = out[1];
+  assert.equal(a.fdvToMcap, 4);
+  assert.equal(a.floatPct, 25);
+  assert.equal(a.volToMcapPct, 10);
+  assert.equal(a.change24hPct, 1.2);
+  assert.equal(a.athDrawdownPct, -74.8);
+  assert.equal(a.xTo1B, 50);
+  const md = renderScreenReport(out, {
+    minMcap: 5e6,
+    maxMcap: 60e6,
+    generatedAt: new Date(0),
+    notes: ["nota x"],
+  });
+  assert.match(
+    md,
+    /\| 1 \| B \| B \(`b`\) \| \$55.00M \| \$220.00M \| 4 \| 25% \| 10% \| \+1\.2% \| -5\.5% \| \+40% \| -74\.8% \| 18\.2x \|/
+  );
+  assert.match(md, /- nota x/);
+  assert.match(md, /no una previsión/);
+});
+
+test("cgMarkets / cgCategories / cgSearch build the right CoinGecko requests", async () => {
+  const urls: string[] = [];
+  const fetchJson = async (url: string) => {
+    urls.push(url);
+    if (url.includes("/categories/list"))
+      return [
+        { category_id: "robotics", name: "Robotics" },
+        { category_id: "ai-agents", name: "AI Agents" },
+      ];
+    if (url.includes("/search?"))
+      return {
+        coins: [{ id: "solrouter", name: "Solrouter", symbol: "router", market_cap_rank: null }],
+      };
+    return [{ id: "grvt", market_cap: 1 }];
+  };
+  const cats = await cgCategories("robot", fetchJson as never);
+  assert.deepEqual(
+    cats.map((c) => c.category_id),
+    ["robotics"]
+  );
+  const rows = await cgMarkets({ ids: ["grvt", "fogo"] }, fetchJson as never);
+  assert.equal(rows[0].id, "grvt");
+  assert.match(
+    urls[1],
+    /coins\/markets\?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&price_change_percentage=24h%2C7d%2C30d&ids=grvt%2Cfogo/
+  );
+  await cgMarkets({ category: "robotics" }, fetchJson as never);
+  assert.match(urls[2], /&category=robotics/);
+  const hits = await cgSearch("solrouter", fetchJson as never);
+  assert.deepEqual(hits, [{ id: "solrouter", name: "Solrouter", symbol: "router", rank: null }]);
 });

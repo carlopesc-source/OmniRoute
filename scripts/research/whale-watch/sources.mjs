@@ -236,3 +236,47 @@ export async function sendDiscord(text, { webhookUrl }) {
   if (!res.ok) throw new Error(`discord webhook HTTP ${res.status}`);
   return true;
 }
+
+// ---------------- CoinGecko (public API, no key required; optional demo key) ----------------
+const CG = "https://api.coingecko.com/api/v3";
+function cgHeaders() {
+  const key = process.env.COINGECKO_API_KEY;
+  return key ? { "x-cg-demo-api-key": key } : {};
+}
+
+/** All category ids (for `--category`). Filter client-side with `q`. */
+export async function cgCategories(q = "", fetchJson = defaultFetchJson) {
+  const list = await fetchJson(`${CG}/coins/categories/list`, { headers: cgHeaders() });
+  const needle = q.toLowerCase();
+  return (Array.isArray(list) ? list : []).filter(
+    (c) => !needle || `${c.category_id} ${c.name}`.toLowerCase().includes(needle)
+  );
+}
+
+/** Market rows for a category or an explicit id list (max 250 per call). */
+export async function cgMarkets({ category = null, ids = [] } = {}, fetchJson = defaultFetchJson) {
+  const params = new URLSearchParams({
+    vs_currency: "usd",
+    order: "market_cap_desc",
+    per_page: "250",
+    page: "1",
+    price_change_percentage: "24h,7d,30d",
+  });
+  if (category) params.set("category", category);
+  if (ids.length) params.set("ids", ids.join(","));
+  const rows = await fetchJson(`${CG}/coins/markets?${params}`, { headers: cgHeaders() });
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** Resolve a name/symbol to CoinGecko ids. */
+export async function cgSearch(query, fetchJson = defaultFetchJson) {
+  const r = await fetchJson(`${CG}/search?query=${encodeURIComponent(query)}`, {
+    headers: cgHeaders(),
+  });
+  return (r?.coins || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    symbol: c.symbol,
+    rank: c.market_cap_rank ?? null,
+  }));
+}

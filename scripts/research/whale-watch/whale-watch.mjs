@@ -6,6 +6,9 @@
 //   node scripts/research/whale-watch/whale-watch.mjs watch [--interval 300] [SYMBOL...]
 //   node scripts/research/whale-watch/whale-watch.mjs report
 //   node scripts/research/whale-watch/whale-watch.mjs alert-test
+//   node scripts/research/whale-watch/whale-watch.mjs screen [--min 5e6] [--max 60e6] [--category <id>] [--ids a,b,c]
+//   node scripts/research/whale-watch/whale-watch.mjs categories [--q robotics]
+//   node scripts/research/whale-watch/whale-watch.mjs search <name-or-symbol>
 //
 // Config:  scripts/research/whale-watch/tokens.json  (or --config <path>)
 // State:   _artifacts/whale-watch/ (gitignored)      (or WHALE_WATCH_DIR)
@@ -31,9 +34,14 @@ import {
   pickBestPair,
   renderHtml,
   renderReport,
+  renderScreenReport,
+  screenMarkets,
   resolveThresholds,
 } from "./lib.mjs";
 import {
+  cgCategories,
+  cgMarkets,
+  cgSearch,
   dexPairsForMints,
   dexSearch,
   getAllHoldersHelius,
@@ -439,10 +447,94 @@ function help() {
     fs
       .readFileSync(fileURLToPath(import.meta.url), "utf8")
       .split("\n")
-      .slice(1, 14)
+      .slice(1, 17)
       .map((l) => l.replace(/^\/\/ ?/, ""))
       .join("\n")
   );
+}
+
+// ---------------- CoinGecko screener ----------------
+function parseNum(v, dflt) {
+  if (v == null || v === true) return dflt;
+  const n = Number(String(v).replace(/[_,]/g, ""));
+  return Number.isFinite(n) ? n : dflt;
+}
+
+async function cmdScreen() {
+  const minMcap = parseNum(flags.min, 5e6);
+  const maxMcap = parseNum(flags.max, 60e6);
+  const categories = []
+    .concat(flags.category || [])
+    .flatMap((c) => String(c).split(","))
+    .filter(Boolean);
+  let ids = []
+    .concat(flags.ids || [])
+    .flatMap((c) => String(c).split(","))
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (!categories.length && !ids.length) {
+    const preset = readJson(path.join(HERE, "screen.json"), null);
+    ids = preset?.ids || [];
+    if (!ids.length)
+      return log("nothing to screen: pass --category <id> (see `categories`) or --ids a,b,c");
+    log(`using ${ids.length} ids from screen.json`);
+  }
+  const rows = [];
+  const notes = [];
+  for (const c of categories) {
+    try {
+      const r = await cgMarkets({ category: c });
+      rows.push(...r);
+      notes.push(`categoría \`${c}\`: ${r.length} monedas leídas`);
+    } catch (err) {
+      log(`category ${c}: ${err.message}`);
+      notes.push(`categoría \`${c}\`: ERROR ${err.message}`);
+    }
+    await sleep(2200); // CoinGecko public tier ≈ 30 req/min
+  }
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    try {
+      const r = await cgMarkets({ ids: chunk });
+      rows.push(...r);
+      const missing = chunk.filter((id) => !r.some((x) => x.id === id));
+      if (missing.length)
+        notes.push(`ids sin datos en CoinGecko: ${missing.join(", ")} (usa \`search\`)`);
+    } catch (err) {
+      log(`ids chunk: ${err.message}`);
+    }
+    await sleep(2200);
+  }
+  const screened = screenMarkets(rows, { minMcap, maxMcap });
+  const md = renderScreenReport(screened, { minMcap, maxMcap, notes });
+  const reportsDir = path.join(stateDir, "reports");
+  ensureDir(reportsDir);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const html = renderHtml(md, { title: `Whale Watch screen ${stamp}` });
+  fs.writeFileSync(path.join(reportsDir, `screen-${stamp}.md`), md);
+  fs.writeFileSync(path.join(reportsDir, `screen-${stamp}.html`), html);
+  fs.writeFileSync(path.join(reportsDir, "screen-latest.md"), md);
+  fs.writeFileSync(path.join(reportsDir, "screen-latest.html"), html);
+  console.log(md);
+  log(`screen: ${path.join(reportsDir, "screen-latest.md")} + screen-latest.html`);
+}
+
+async function cmdCategories() {
+  const q = typeof flags.q === "string" ? flags.q : "";
+  const cats = await cgCategories(q);
+  if (!cats.length) return log(`no CoinGecko category matches "${q}"`);
+  for (const c of cats) console.log(`${c.category_id.padEnd(40)} ${c.name}`);
+}
+
+async function cmdSearch() {
+  const q = positional.join(" ");
+  if (!q) return log("usage: search <name-or-symbol>");
+  const hits = await cgSearch(q);
+  if (!hits.length) return log(`no CoinGecko match for "${q}"`);
+  for (const h of hits.slice(0, 15))
+    console.log(
+      `${h.id.padEnd(32)} ${h.symbol.toUpperCase().padEnd(10)} ${h.name}${h.rank ? `  (rank ${h.rank})` : ""}`
+    );
 }
 
 // ---------------- main ----------------
@@ -461,6 +553,12 @@ const main = async () => {
       return cmdReport(cfg);
     case "alert-test":
       return sendAlert("Whale Watch: mensaje de prueba");
+    case "screen":
+      return cmdScreen();
+    case "categories":
+      return cmdCategories();
+    case "search":
+      return cmdSearch();
     default:
       help();
       process.exitCode = 1;
