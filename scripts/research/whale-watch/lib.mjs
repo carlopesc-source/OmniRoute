@@ -157,6 +157,24 @@ export function normalizeMarket(pair) {
 }
 
 /**
+ * Build the `accounts` list `aggregateHolders` expects from RugCheck's topHolders,
+ * used when the Solana RPC refuses the holder calls (public endpoints 429/403).
+ * RugCheck gives pct of supply per holder, so `amount` is derived from `supply`.
+ * Returns [] when there is nothing usable.
+ */
+export function accountsFromRugcheck(topHolders, supply) {
+  if (!Array.isArray(topHolders) || !(supply > 0)) return [];
+  return topHolders
+    .filter((h) => h && h.owner)
+    .map((h) => ({
+      tokenAccount: h.tokenAccount || h.owner,
+      owner: h.owner,
+      amount: h.amount > 0 ? Number(h.amount) : ((Number(h.pct) || 0) / 100) * supply,
+    }))
+    .filter((a) => a.amount > 0);
+}
+
+/**
  * Aggregate token accounts into owners and label pools / known addresses.
  * accounts: [{ tokenAccount, owner, amount }] (amount already in UI units)
  * labels:   { [address]: { name, type } }  type ∈ pool | lp | burn | exchange | insider | user ...

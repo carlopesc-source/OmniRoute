@@ -5,6 +5,8 @@
 // Public endpoints used (no API key):
 //   - DexScreener  https://api.dexscreener.com   (pairs, price, liquidity, txns)
 //   - Solana RPC   https://api.mainnet-beta.solana.com (supply, 20 largest token accounts, owners)
+//                  `rpc()` accepts ONE url or a LIST: it retries 429/5xx with backoff and moves to
+//                  the next url on 401/403/"needs a key" answers (public endpoints differ a lot).
 //   - RugCheck     https://api.rugcheck.xyz/v1   (top holders, insiders, LP lock, risks)
 // Optional (API key): Helius `getTokenAccounts` for the FULL holder list.
 
@@ -49,44 +51,117 @@ export async function dexSearch(query, fetchJson = defaultFetchJson) {
   return Array.isArray(data?.pairs) ? data.pairs : [];
 }
 
+const EVM_ADDR = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * DexScreener pairs for a list of token addresses.
+ * - Solana mints go through the chain-scoped batch endpoint `/tokens/v1/solana/{a,b,c}`.
+ * - EVM addresses (0x…) go through the chain-agnostic `/latest/dex/tokens/{a,b,c}`: the
+ *   config does not know WHICH EVM chain a token lives on (Robinhood Chain, Base, Ethereum…),
+ *   and that endpoint returns the pairs on every chain so `pickBestPair` can choose.
+ *   Sending 0x addresses to `/tokens/v1/solana/` returns nothing, which is why EVM tokens
+ *   used to show `price=n/d`.
+ * Any batch failure falls back to one request per address on the chain-agnostic endpoint.
+ */
 export async function dexPairsForMints(mints, fetchJson = defaultFetchJson) {
   const out = [];
-  for (let i = 0; i < mints.length; i += 30) {
-    const chunk = mints.slice(i, i + 30);
+  const solana = mints.filter((m) => !EVM_ADDR.test(m));
+  const evm = mints.filter((m) => EVM_ADDR.test(m));
+  const perToken = async (chunk) => {
+    const pairs = [];
+    for (const m of chunk) {
+      const d = await fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${m}`);
+      if (Array.isArray(d?.pairs)) pairs.push(...d.pairs);
+    }
+    return pairs;
+  };
+  const asPairs = (data) =>
+    Array.isArray(data) ? data : Array.isArray(data?.pairs) ? data.pairs : null;
+  for (let i = 0; i < solana.length; i += 30) {
+    const chunk = solana.slice(i, i + 30);
     let pairs = null;
     try {
-      const data = await fetchJson(
-        `https://api.dexscreener.com/tokens/v1/solana/${chunk.join(",")}`
+      pairs = asPairs(
+        await fetchJson(`https://api.dexscreener.com/tokens/v1/solana/${chunk.join(",")}`)
       );
-      if (Array.isArray(data)) pairs = data;
-      else if (Array.isArray(data?.pairs)) pairs = data.pairs;
     } catch {
       pairs = null;
     }
-    if (!pairs) {
-      // Fallback to the older endpoint, one mint at a time.
-      pairs = [];
-      for (const m of chunk) {
-        const d = await fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${m}`);
-        if (Array.isArray(d?.pairs)) pairs.push(...d.pairs);
-      }
+    out.push(...(pairs || (await perToken(chunk))));
+  }
+  for (let i = 0; i < evm.length; i += 30) {
+    const chunk = evm.slice(i, i + 30);
+    let pairs = null;
+    try {
+      pairs = asPairs(
+        await fetchJson(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(",")}`)
+      );
+    } catch {
+      pairs = null;
     }
-    out.push(...pairs);
+    out.push(...(pairs || (await perToken(chunk))));
   }
   return out;
 }
 
 // ---------------- Solana JSON-RPC ----------------
-export async function rpc(rpcUrl, method, params, fetchJson = defaultFetchJson) {
-  const body = { jsonrpc: "2.0", id: 1, method, params };
-  const data = await fetchJson(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (data?.error)
-    throw new Error(`RPC ${method}: ${data.error.message || JSON.stringify(data.error)}`);
-  return data?.result;
+/** Answers that mean "this endpoint will not serve this call": try the next url. */
+const RPC_SKIP_ENDPOINT =
+  /HTTP (401|403|404)\b|api key|personal token|not allowed|upgrade|free plan/i;
+/** Answers that mean "slow down": retry the same url with backoff. */
+const RPC_RETRY =
+  /HTTP (429|5\d\d)\b|too many requests|rate limit|Internal JSON-RPC error|timeout|AbortError/i;
+
+/**
+ * JSON-RPC call against one url or an ordered list of urls.
+ * Per url: up to `attempts` tries with exponential backoff on 429/5xx-style answers.
+ * On 401/403/"needs a key" answers the url is skipped and the next one is tried.
+ * Deterministic RPC errors (bad params, mint not found) are thrown at once: no url will fix them.
+ */
+export async function rpc(
+  rpcUrl,
+  method,
+  params,
+  fetchJson = defaultFetchJson,
+  { attempts = 4, baseDelayMs = 1000 } = {}
+) {
+  const urls = (Array.isArray(rpcUrl) ? rpcUrl : [rpcUrl]).filter(Boolean);
+  if (!urls.length) throw new Error(`RPC ${method}: no rpc url configured`);
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params });
+  let lastErr;
+  for (const url of urls) {
+    for (let i = 0; i < attempts; i++) {
+      let data;
+      try {
+        // retries: 0 → this loop owns backoff and endpoint rotation.
+        data = await fetchJson(
+          url,
+          { method: "POST", headers: { "content-type": "application/json" }, body },
+          { retries: 0 }
+        );
+      } catch (err) {
+        lastErr = new Error(`RPC ${method}: ${err?.message || err} (${url})`);
+        if (RPC_SKIP_ENDPOINT.test(String(err?.message))) break; // next url
+        if (RPC_RETRY.test(String(err?.message)) || err?.name === "AbortError") {
+          await sleep(baseDelayMs * 2 ** i);
+          continue;
+        }
+        throw lastErr;
+      }
+      if (data?.error) {
+        const msg = data.error.message || JSON.stringify(data.error);
+        lastErr = new Error(`RPC ${method}: ${msg} (${url})`);
+        if (RPC_SKIP_ENDPOINT.test(msg)) break; // next url
+        if (RPC_RETRY.test(msg) || data.error.code === 429) {
+          await sleep(baseDelayMs * 2 ** i);
+          continue;
+        }
+        throw lastErr; // deterministic error, e.g. "could not find mint"
+      }
+      return data?.result;
+    }
+  }
+  throw lastErr || new Error(`RPC ${method}: all endpoints failed`);
 }
 
 export async function getMintInfo(rpcUrl, mint, fetchJson) {
@@ -175,9 +250,13 @@ export async function getRugcheck(mint, fetchJson = defaultFetchJson) {
     if (!k) continue;
     labels[addr] = { name: k.name || k.type || "known", type: normaliseType(k.type) };
   }
+  const decimals = Number.isFinite(Number(r?.token?.decimals)) ? Number(r.token.decimals) : null;
+  const rawSupply = Number(r?.token?.supply);
   return {
     score: r?.score ?? null,
     scoreNormalised: r?.score_normalised ?? null,
+    decimals,
+    supply: decimals != null && Number.isFinite(rawSupply) ? rawSupply / 10 ** decimals : null,
     insiderPct,
     insiderNetworks: (r?.insiderNetworks || []).map((n) => ({
       id: n?.id,

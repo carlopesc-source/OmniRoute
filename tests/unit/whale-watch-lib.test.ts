@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  accountsFromRugcheck,
   DEFAULT_THRESHOLDS,
   aggregateHolders,
   alertKey,
@@ -605,4 +606,115 @@ test("cgMarkets / cgCategories / cgSearch build the right CoinGecko requests", a
   assert.match(urls[2], /&category=robotics/);
   const hits = await cgSearch("solrouter", fetchJson as never);
   assert.deepEqual(hits, [{ id: "solrouter", name: "Solrouter", symbol: "router", rank: null }]);
+});
+
+test("rpc retries 429 with backoff and rotates to the next endpoint on 403 / key-required", async () => {
+  const calls: string[] = [];
+  const fetchJson = async (url: string) => {
+    calls.push(url);
+    if (url === "https://a") throw new Error("HTTP 403 https://a");
+    if (url === "https://b")
+      return { error: { code: -32602, message: "Indexed requests require a personal token" } };
+    if (url === "https://c") {
+      if (calls.filter((u) => u === "https://c").length < 3) throw new Error("HTTP 429 https://c");
+      return { result: { ok: true } };
+    }
+    throw new Error("unexpected " + url);
+  };
+  const out = await rpc(
+    ["https://a", "https://b", "https://c"],
+    "getSlot",
+    [],
+    fetchJson as never,
+    {
+      baseDelayMs: 1,
+    }
+  );
+  assert.deepEqual(out, { ok: true });
+  assert.deepEqual(calls, ["https://a", "https://b", "https://c", "https://c", "https://c"]);
+  // Deterministic RPC errors are not retried and not rotated.
+  await assert.rejects(
+    rpc(
+      ["https://a2", "https://b2"],
+      "getAccountInfo",
+      [],
+      (async () => ({ error: { message: "Invalid param: could not find mint" } })) as never,
+      { baseDelayMs: 1 }
+    ),
+    /could not find mint/
+  );
+  // A plain string url still works and gives up after `attempts` 429s.
+  let n = 0;
+  await assert.rejects(
+    rpc(
+      "https://only",
+      "getSlot",
+      [],
+      (async () => {
+        n++;
+        throw new Error("HTTP 429 https://only");
+      }) as never,
+      { baseDelayMs: 1, attempts: 2 }
+    ),
+    /HTTP 429/
+  );
+  assert.equal(n, 2);
+});
+
+test("dexPairsForMints sends EVM addresses to the chain-agnostic endpoint, Solana to the batch one", async () => {
+  const urls: string[] = [];
+  const evm = "0x23a2847d772803f9efc64b4277b782b06296fe51";
+  const fetchJson = async (url: string) => {
+    urls.push(url);
+    if (url.includes("/tokens/v1/solana/")) return [pair()];
+    if (url.includes("/latest/dex/tokens/"))
+      return {
+        pairs: [pair({ chainId: "robinhood", baseToken: { address: evm, symbol: "DOT" } })],
+      };
+    throw new Error("unexpected " + url);
+  };
+  const pairs = await dexPairsForMints([MINT, evm], fetchJson as never);
+  assert.equal(pairs.length, 2);
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], new RegExp(`/tokens/v1/solana/${MINT}`));
+  assert.match(urls[1], new RegExp(`/latest/dex/tokens/${evm}$`));
+  assert.ok(urls.every((u) => !u.includes(`/tokens/v1/solana/${evm}`)));
+  const best = pickBestPair(pairs, { mint: evm, chain: "evm" });
+  assert.equal(best?.chainId, "robinhood");
+});
+
+test("accountsFromRugcheck turns RugCheck top holders into aggregateHolders input", () => {
+  const supply = 1_000_000;
+  const accounts = accountsFromRugcheck(
+    [
+      { owner: "A", tokenAccount: "ta", pct: 27.12, amount: 0 },
+      { owner: "B", pct: 10, amount: 123_456 },
+      { owner: null, pct: 5 },
+      { owner: "C", pct: 0, amount: 0 },
+    ],
+    supply
+  );
+  assert.deepEqual(accounts, [
+    { tokenAccount: "ta", owner: "A", amount: 271_200 },
+    { tokenAccount: "B", owner: "B", amount: 123_456 },
+  ]);
+  assert.deepEqual(accountsFromRugcheck(undefined, supply), []);
+  assert.deepEqual(accountsFromRugcheck([{ owner: "A", pct: 1 }], 0), []);
+  const agg = aggregateHolders(accounts, { supply });
+  assert.equal(agg[0].owner, "A");
+  assert.ok(Math.abs(agg[0].pct - 27.12) < 1e-9);
+});
+
+test("getRugcheck exposes supply and decimals so the RPC can be skipped", async () => {
+  const fetchJson = async () => ({
+    token: { supply: "1000000000000", decimals: 6, mintAuthority: null, freezeAuthority: null },
+    topHolders: [],
+    markets: [],
+  });
+  const r = await getRugcheck("MINT", fetchJson as never);
+  assert.equal(r.decimals, 6);
+  assert.equal(r.supply, 1_000_000);
+  const none = await getRugcheck("MINT", (async () => ({})) as never);
+  assert.equal(none.supply, null);
+  assert.equal(none.decimals, null);
 });

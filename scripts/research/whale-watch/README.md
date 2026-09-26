@@ -53,6 +53,7 @@ Variables de entorno opcionales:
 | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `HELIUS_API_KEY`                          | Lista completa de holders (`getTokenAccounts`) en vez del top-20.                          |
 | `SOLANA_RPC_URL`                          | RPC alternativo (el público limita ~100 peticiones / 10 s).                                |
+| `SOLANA_RPC_URLS`                         | Lista ordenada separada por comas; el script pasa al siguiente si uno responde 401/403 o pide clave, y reintenta con espera los 429. Si todos fallan, supply y holders salen de RugCheck (se indica en `holderSource`). |
 | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Alertas por Telegram.                                                                      |
 | `DISCORD_WEBHOOK_URL`                     | Alertas por Discord.                                                                       |
 | `WHALE_WATCH_DIR`                         | Dónde guardar estado e informes (por defecto `_artifacts/whale-watch/`, ignorado por git). |

@@ -22,6 +22,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  accountsFromRugcheck,
   aggregateHolders,
   candidatesBySymbol,
   dedupeAlerts,
@@ -81,7 +82,15 @@ const stateDir = path.resolve(
 function loadConfig() {
   const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
   cfg.thresholds = resolveThresholds(cfg.thresholds);
-  cfg.rpcUrl = process.env.SOLANA_RPC_URL || cfg.rpcUrl || "https://api.mainnet-beta.solana.com";
+  // Ordered list of Solana RPC endpoints. SOLANA_RPC_URLS (comma-separated) > SOLANA_RPC_URL >
+  // tokens.json rpcUrls[] > tokens.json rpcUrl > public default. `rpc()` rotates on 403/429.
+  const fromEnv = process.env.SOLANA_RPC_URLS || process.env.SOLANA_RPC_URL || "";
+  const fromCfg = Array.isArray(cfg.rpcUrls) && cfg.rpcUrls.length ? cfg.rpcUrls : [cfg.rpcUrl];
+  cfg.rpcUrls = (fromEnv ? fromEnv.split(",") : fromCfg)
+    .map((u) => String(u || "").trim())
+    .filter(Boolean);
+  if (!cfg.rpcUrls.length) cfg.rpcUrls = ["https://api.mainnet-beta.solana.com"];
+  cfg.rpcUrl = cfg.rpcUrls[0];
   cfg.topN = cfg.topN || 20;
   cfg.alertCooldownHours = cfg.alertCooldownHours ?? 6;
   cfg.tokens = (cfg.tokens || []).map((t) => ({ ...t, symbol: String(t.symbol) }));
@@ -208,15 +217,32 @@ async function analyzeToken(cfg, t, labels, market) {
     writeJson(path.join(dir, "latest.json"), snap);
     return snap;
   }
-  const rpcUrl = cfg.rpcUrl;
+  const rpcUrl = cfg.rpcUrls || cfg.rpcUrl;
   const heliusKey = process.env.HELIUS_API_KEY;
 
-  const mintInfo = await getMintInfo(rpcUrl, t.mint);
+  // RugCheck first: it is the fallback for supply, decimals, authorities AND holders when the
+  // public Solana RPC refuses the calls (429 "too many requests", 403 "needs a key").
   let rug = null;
   try {
     rug = await getRugcheck(t.mint);
   } catch (err) {
     log(`  ${t.symbol}: rugcheck unavailable (${err.message})`);
+  }
+  let mintInfo;
+  let mintSource = "rpc getAccountInfo";
+  try {
+    mintInfo = await getMintInfo(rpcUrl, t.mint);
+  } catch (err) {
+    if (!(rug?.supply > 0) || rug.decimals == null) throw err;
+    mintInfo = {
+      decimals: rug.decimals,
+      supply: rug.supply,
+      mintAuthority: rug.mintAuthority,
+      freezeAuthority: rug.freezeAuthority,
+      program: null,
+    };
+    mintSource = `rugcheck (RPC no disponible: ${err.message})`;
+    log(`  ${t.symbol}: mint info from RugCheck (${err.message})`);
   }
   let accounts;
   let holderSource;
@@ -228,8 +254,15 @@ async function analyzeToken(cfg, t, labels, market) {
     );
     holderSource = `helius getTokenAccounts (${accounts.length} accounts)`;
   } else {
-    accounts = await getLargestHolders(rpcUrl, t.mint, mintInfo.decimals);
-    holderSource = "rpc getTokenLargestAccounts (20 largest token accounts only)";
+    try {
+      accounts = await getLargestHolders(rpcUrl, t.mint, mintInfo.decimals);
+      holderSource = "rpc getTokenLargestAccounts (20 largest token accounts only)";
+    } catch (err) {
+      accounts = accountsFromRugcheck(rug?.topHolders, mintInfo.supply);
+      if (!accounts.length) throw err;
+      holderSource = `rugcheck topHolders (${accounts.length} holders; RPC no disponible: ${err.message})`;
+      log(`  ${t.symbol}: holders from RugCheck (${err.message})`);
+    }
   }
   const poolTokenAccounts = new Set(rug?.poolTokenAccounts || []);
   const poolOwners = new Set([
@@ -281,6 +314,7 @@ async function analyzeToken(cfg, t, labels, market) {
     mint: t.mint,
     mintVerified: t.mintVerified !== false,
     holderSource,
+    mintSource,
     supply: mintInfo.supply,
     decimals: mintInfo.decimals,
     market,
